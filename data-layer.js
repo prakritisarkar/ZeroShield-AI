@@ -12,8 +12,8 @@ const Log = require('./models/Log');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Set up server and generic WebSockets
 const server = http.createServer(app);
+
 const io = new Server(server, {
     cors: {
         origin: "*",
@@ -24,22 +24,19 @@ const io = new Server(server, {
 app.use(cors());
 app.use(express.json());
 
-// Boot MongoDB Connection
 mongoose.connect(process.env.MONGODB_URI)
-    .then(() =>
-        console.log('[DB] MongoDB elegantly connected for SaaS continuity.')
-    )
-    .catch(err =>
+    .then(() => {
+        console.log('[DB] MongoDB elegantly connected for SaaS continuity.');
+    })
+    .catch(err => {
         console.warn(
             '[DB] MongoDB failed to connect. Running in degraded array mode.',
             err.message
-        )
-    );
+        );
+    });
 
-// Register User Authentication Routes
 app.use('/api/auth', authRoutes);
 
-// Fallback arrays for prototype performance
 const cloudLogs = [];
 const denyList = [];
 const isolationLogs = [];
@@ -64,38 +61,20 @@ setInterval(() => {
 function emitDashboardStats() {
     const totalEvents = cloudLogs.length;
     const latestLog = totalEvents > 0 ? cloudLogs[cloudLogs.length - 1] : null;
-    const currentRiskScore =
-        latestLog && latestLog.riskScore ? latestLog.riskScore : 0;
-
-    const totalThreatsDetected = Math.floor(totalEvents * 0.625);
-    const totalThreatsPrevented = Math.floor(totalEvents * 0.25);
-    const recentAutomatedIsolations = [...isolationLogs]
-        .reverse()
-        .slice(0, 50);
-
-    const apiCallsPerSec =
-        liveApiWindow > 0
-            ? liveApiWindow
-            : Math.floor(Math.random() * 50) + 700;
-
-    const networkMb =
-        liveTrafficWindow > 0
-            ? (liveTrafficWindow / 1024).toFixed(1)
-            : (Math.random() * 2 + 1).toFixed(1);
-
-    const activeUsers = Math.floor(200 + Math.random() * 30);
 
     io.emit('stats_update', {
-        currentRiskScore,
+        currentRiskScore: latestLog?.riskScore || 0,
         totalEvents,
-        totalThreatsDetected,
-        totalThreatsPrevented,
-        recentAutomatedIsolations,
+        totalThreatsDetected: cloudLogs.filter(log => log.isAnomaly).length,
+        totalThreatsPrevented: denyList.length,
+        recentAutomatedIsolations: [...isolationLogs].reverse().slice(0, 50),
         services: systemServices,
         liveMetrics: {
-            apiCalls: apiCallsPerSec,
-            networkTraffic: parseFloat(networkMb),
-            activeUsers
+            apiCalls: liveApiWindow || Math.floor(Math.random() * 50) + 700,
+            networkTraffic: liveTrafficWindow
+                ? parseFloat((liveTrafficWindow / 1024).toFixed(1))
+                : parseFloat((Math.random() * 2 + 1).toFixed(1)),
+            activeUsers: Math.floor(200 + Math.random() * 30)
         }
     });
 }
@@ -108,15 +87,13 @@ io.on('connection', (socket) => {
             type: 'warning',
             msg: 'Simulated Zero-day attack burst initiated via WebSocket.',
             src: 'UI/Admin',
-            time: new Date().toLocaleTimeString('en-US', {
-                hour12: false
-            })
+            time: new Date().toLocaleTimeString('en-US', { hour12: false })
         });
 
         for (let i = 0; i < 50; i++) {
             await processIngestion({
                 timestamp: new Date().toISOString(),
-                sourceIP: "10.13.37." + Math.floor(Math.random() * 255),
+                sourceIP: `10.13.37.${Math.floor(Math.random() * 255)}`,
                 apiCall: "iam:AttachRolePolicy",
                 dataVolume: Math.floor(Math.random() * 1000) + 5000
             });
@@ -130,11 +107,11 @@ async function processIngestion(data) {
     if (denyList.includes(sourceIP)) {
         return {
             status: 403,
-            error: "Traffic blocked. IP is on the ZeroShield DenyList."
+            error: "Traffic blocked. IP is blacklisted."
         };
     }
 
-    liveApiWindow += 1;
+    liveApiWindow++;
     liveTrafficWindow += dataVolume || 0;
 
     const newLog = {
@@ -158,53 +135,37 @@ async function processIngestion(data) {
     cloudLogs.push(finalLog);
 
     try {
-        const dbLog = new Log(finalLog);
-        await dbLog.save();
+        await new Log(finalLog).save();
     } catch (e) {}
 
     io.emit('new_log', finalLog);
     emitDashboardStats();
 
     if (analysisResult.isAnomaly) {
-        if (analysisResult.riskScore > 60) {
-            io.emit('live_alert', {
-                type: 'critical',
-                msg: 'Anomaly Detected: Volatile Access Pattern.',
-                src: sourceIP,
-                time: new Date().toLocaleTimeString('en-US', {
-                    hour12: false
-                })
+        if (analysisResult.riskScore > 80 && !denyList.includes(sourceIP)) {
+            denyList.push(sourceIP);
+
+            isolationLogs.push({
+                ip: sourceIP,
+                timestamp: new Date().toISOString(),
+                reason: `Threshold Limit Reached (${analysisResult.riskScore}/100)`
             });
-        }
 
-        if (analysisResult.riskScore > 80) {
-            if (!denyList.includes(sourceIP)) {
-                denyList.push(sourceIP);
+            const activeIdx = systemServices.findIndex(
+                s => s.status === 'active'
+            );
 
-                isolationLogs.push({
-                    ip: sourceIP,
-                    timestamp: new Date().toISOString(),
-                    reason: `Threshold Limit Reached (${analysisResult.riskScore}/100)`
-                });
-
-                const activeIdx = systemServices.findIndex(
-                    (s) => s.status === 'active'
-                );
-
-                if (activeIdx > -1) {
-                    systemServices[activeIdx].status = 'isolated';
-                }
-
-                io.emit('live_alert', {
-                    type: 'critical',
-                    msg: 'Service node automatically ISOLATED and IP blacklisted.',
-                    src: sourceIP,
-                    time: new Date().toLocaleTimeString('en-US', {
-                        hour12: false
-                    })
-                });
+            if (activeIdx > -1) {
+                systemServices[activeIdx].status = 'isolated';
             }
         }
+
+        io.emit('live_alert', {
+            type: analysisResult.riskScore > 80 ? 'critical' : 'warning',
+            msg: 'Anomaly detected.',
+            src: sourceIP,
+            time: new Date().toLocaleTimeString('en-US', { hour12: false })
+        });
     }
 
     return {
@@ -213,8 +174,6 @@ async function processIngestion(data) {
         analysis: analysisResult
     };
 }
-
-// API ROUTES
 
 app.post('/api/ingest', async (req, res) => {
     const { timestamp, sourceIP, apiCall, dataVolume } = req.body;
@@ -230,7 +189,7 @@ app.post('/api/ingest', async (req, res) => {
         dataVolume
     });
 
-    return res.status(result.status).json(result);
+    res.status(result.status).json(result);
 });
 
 app.post('/api/analyze', (req, res) => {
@@ -240,68 +199,58 @@ app.post('/api/analyze', (req, res) => {
 });
 
 app.get('/api/health', (req, res) => {
-    res.status(200).json({ status: 'ok' });
+    res.json({ status: 'ok' });
 });
 
 app.get('/api/logs', (req, res) => {
-    const mockLogs = [
-        {
-            id: 1,
-            time: '20:02:00',
-            type: 'threat',
-            severity: 'critical',
-            message:
-                'Zero-day exploit detected on API gateway endpoint /v2/auth',
-            source: 'AI Detection Engine'
-        },
-        {
-            id: 2,
-            time: '20:00:00',
-            type: 'api',
-            severity: 'warning',
-            message: 'POST /api/v2/users - 403 Forbidden (blocked)',
-            source: 'API Gateway'
-        },
-        {
-            id: 3,
-            time: '19:58:00',
-            type: 'system',
-            severity: 'info',
-            message: 'Auto-response: IP 192.168.1.45 blocked',
-            source: 'Response Engine'
-        }
-    ];
-
-    res.json(mockLogs);
+    res.json(cloudLogs.slice(-50).reverse());
 });
 
 app.get('/api/stats', (req, res) => {
-    const totalEvents = cloudLogs.length;
-
     res.json({
-        risk_score:
-            cloudLogs.length > 0
-                ? cloudLogs[cloudLogs.length - 1].riskScore
-                : 12,
-        active_alerts: Math.floor(totalEvents * 0.625) || 3,
+        risk_score: cloudLogs.length
+            ? cloudLogs[cloudLogs.length - 1].riskScore
+            : 12,
+        active_alerts: cloudLogs.filter(log => log.isAnomaly).length,
         monitored_endpoints: 1250,
         system_status: 'Online'
     });
 });
 
 app.get('/api/threats', (req, res) => {
-    res.json([
-        {
-            name: "CVE-2024-0001 Exploit",
-            desc: "Zero-Day RCE",
-            ip: "192.168.1.45",
+    const threats = cloudLogs
+        .filter(log => log.isAnomaly)
+        .slice(-20)
+        .map(log => ({
+            name: "Detected Threat",
+            desc: log.reasons?.join(', ') || "Suspicious Activity",
+            ip: log.sourceIP,
             cloud: "AWS",
             status: "Active"
-        }
-    ]);
+        }));
+
+    res.json(threats);
 });
 
-// NEW NOTIFICATION ROUTES
+app.get('/api/detections', (req, res) => {
+    const detections = cloudLogs
+        .filter(log => log.isAnomaly)
+        .slice(-20)
+        .reverse();
+
+    res.json(detections);
+});
+
+app.get('/api/simulation-results', (req, res) => {
+    res.json({
+        total_logs: cloudLogs.length,
+        anomalies: cloudLogs.filter(log => log.isAnomaly).length,
+        blocked_ips: denyList.length,
+        isolated_services: systemServices.filter(
+            s => s.status === 'isolated'
+        ).length
+    });
+});
 
 app.get('/api/notifications', (req, res) => {
     res.json([
@@ -320,7 +269,7 @@ app.get('/api/notifications', (req, res) => {
 app.post('/api/notifications/read', (req, res) => {
     const { id } = req.body;
 
-    res.status(200).json({
+    res.json({
         success: true,
         message: `Notification ${id} marked as read`
     });
