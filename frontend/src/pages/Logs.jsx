@@ -11,8 +11,7 @@ const mockLogs = [
     time: '20:02:00',
     type: 'threat',
     severity: 'critical',
-    message:
-      'Zero-day exploit detected on API gateway endpoint /v2/auth',
+    message: 'Zero-day exploit detected on API gateway endpoint /v2/auth',
     source: 'AI Detection Engine',
   },
   {
@@ -40,12 +39,57 @@ export default function Logs() {
   const filters = ['All', 'Api', 'Auth', 'System', 'Threat'];
 
   useEffect(() => {
+    // Fetch logs from backend and normalize them
     api.get('/logs')
       .then((data) => {
-        if (data && data.length > 0) setLogs(data);
+        if (data && data.length > 0) {
+          const formattedLogs = data.map((log) => {
+            let logType = 'system';
+
+            if (log.isAnomaly && log.riskScore > 80) {
+              logType = 'threat';
+            } else if (log.apiCall?.includes('auth')) {
+              logType = 'auth';
+            } else if (
+              log.apiCall?.includes('api') ||
+              log.apiCall?.includes(':')
+            ) {
+              logType = 'api';
+            }
+
+            let sev = 'info';
+
+            if (log.riskScore > 80) {
+              sev = 'critical';
+            } else if (log.riskScore > 50 || log.isAnomaly) {
+              sev = 'warning';
+            }
+
+            return {
+              id: log.id || Math.random(),
+              time: log.timestamp
+                ? new Date(log.timestamp).toLocaleTimeString('en-US', {
+                    hour12: false,
+                  })
+                : new Date(log.ingestedAt || Date.now()).toLocaleTimeString(
+                    'en-US',
+                    { hour12: false }
+                  ),
+              type: logType,
+              severity: sev,
+              message: `[${log.sourceIP}] ${log.apiCall} - Vol: ${log.dataVolume} bytes ${
+                log.isAnomaly ? 'ANOMALY DETECTED' : 'OK'
+              }`,
+              source: log.isAnomaly ? 'AI Engine' : 'API Gateway',
+            };
+          });
+
+          setLogs(formattedLogs.reverse());
+        }
       })
       .catch((err) => console.error('Could not fetch logs:', err));
 
+    // Real-time socket listener
     const socket = io(SOCKET_BASE);
 
     socket.on('new_log', (log) => {
@@ -53,11 +97,11 @@ export default function Logs() {
 
       if (log.isAnomaly && log.riskScore > 80) {
         logType = 'threat';
-      } else if (log.apiCall.includes('auth')) {
+      } else if (log.apiCall?.includes('auth')) {
         logType = 'auth';
       } else if (
-        log.apiCall.includes('api') ||
-        log.apiCall.includes(':')
+        log.apiCall?.includes('api') ||
+        log.apiCall?.includes(':')
       ) {
         logType = 'api';
       }
@@ -71,17 +115,18 @@ export default function Logs() {
       }
 
       const formattedLog = {
-        id: log.id,
+        id: log.id || Math.random(),
         time: log.timestamp
           ? new Date(log.timestamp).toLocaleTimeString('en-US', {
               hour12: false,
             })
-          : new Date(log.ingestedAt).toLocaleTimeString('en-US', {
-              hour12: false,
-            }),
+          : new Date(log.ingestedAt || Date.now()).toLocaleTimeString(
+              'en-US',
+              { hour12: false }
+            ),
         type: logType,
         severity: sev,
-        message: `[${log.sourceIP}] ${log.apiCall} - Vol: ${log.dataVolume} bytes. ${
+        message: `[${log.sourceIP}] ${log.apiCall} - Vol: ${log.dataVolume} bytes ${
           log.isAnomaly ? 'ANOMALY DETECTED' : 'OK'
         }`,
         source: log.isAnomaly ? 'AI Engine' : 'API Gateway',
@@ -161,7 +206,7 @@ export default function Logs() {
               className="flex flex-col lg:flex-row items-start lg:items-center py-4 px-4 border-b border-white/[0.03] last:border-0 hover:bg-white/[0.02] transition-colors gap-4 lg:gap-6 rounded group"
             >
               <div className="flex items-center gap-4 shrink-0 font-mono text-xs">
-                <span className="text-slate-500 w-[60px]">{log.time}</span>
+                <span className="text-slate-500 w-[80px]">{log.time}</span>
 
                 <span
                   className={`px-2.5 py-0.5 rounded-full font-medium lowercase tracking-wide ${getTypeStyle(
@@ -180,7 +225,7 @@ export default function Logs() {
                 </span>
               </div>
 
-              <div className="flex-1 font-mono text-[13px] text-slate-300">
+              <div className="flex-1 font-mono text-[13px] text-slate-300 break-all">
                 {log.message}
               </div>
 
