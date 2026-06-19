@@ -252,6 +252,35 @@ app.get('/api/simulation-results', (req, res) => {
     });
 });
 
+/* NEW ANALYTICS ROUTES */
+
+app.get('/api/traffic', (req, res) => {
+    const trafficData = cloudLogs.slice(-24).map((log, index) => ({
+        hour: `${index + 1}h`,
+        volume: log.dataVolume || 0
+    }));
+
+    res.json(trafficData);
+});
+
+app.get('/api/activity', (req, res) => {
+    const activityData = cloudLogs.slice(-7).map((log, index) => ({
+        day: `Day ${index + 1}`,
+        calls: 1
+    }));
+
+    res.json(activityData);
+});
+
+app.get('/api/risk-trend', (req, res) => {
+    const trendData = cloudLogs.slice(-30).map((log, index) => ({
+        day: `${index + 1}`,
+        risk: log.riskScore || 0
+    }));
+
+    res.json(trendData);
+});
+
 app.get('/api/notifications', (req, res) => {
     res.json([
         {
